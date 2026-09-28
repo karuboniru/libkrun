@@ -7,7 +7,7 @@
 //! adapting it to work with libkrun's VirtioDevice trait.
 
 use std::io::{self, ErrorKind, IoSlice, Read, Result as IoResult, Write};
-use std::os::fd::{AsRawFd, FromRawFd, RawFd};
+use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
 
@@ -32,7 +32,6 @@ use vhost::vhost_user::{
 };
 use vhost::{VhostBackend, VhostUserMemoryRegionInfo, VringConfigData};
 use vm_memory::{Address, ByteValued, GuestMemoryBackend, GuestMemoryMmap, GuestMemoryRegion};
-use vmm_sys_util::eventfd::EventFd as VhostEventFd;
 
 use crate::display::DisplayInfo;
 use crate::virtio::{
@@ -564,25 +563,12 @@ impl VhostUserDevice {
                     io::Error::other(e)
                 })?;
 
-            // Create vhost-compatible EventFd from the raw fd
-            // (bridges krun_utils::EventFd with vmm_sys_util::EventFd type mismatch)
-            let kick_fd = unsafe { VhostEventFd::from_raw_fd(device_queue.event.as_raw_fd()) };
             frontend
-                .set_vring_kick(queue_index, &kick_fd)
-                .map_err(|e| {
-                    error!("{}: set_vring_kick failed: {:?}", self.device_name, e);
-                    io::Error::other(e)
-                })?;
-            std::mem::forget(kick_fd); // Don't close the fd twice
-
-            let call_fd = unsafe { VhostEventFd::from_raw_fd(vring_call_event.as_raw_fd()) };
+                .set_vring_kick(queue_index, &device_queue.event)
+                .map_err(io::Error::other)?;
             frontend
-                .set_vring_call(queue_index, &call_fd)
-                .map_err(|e| {
-                    error!("{}: set_vring_call failed: {:?}", self.device_name, e);
-                    io::Error::other(e)
-                })?;
-            std::mem::forget(call_fd); // Don't close the fd twice
+                .set_vring_call(queue_index, &vring_call_event)
+                .map_err(io::Error::other)?;
 
             // Per QEMU vhost.c: when VHOST_USER_F_PROTOCOL_FEATURES is not negotiated,
             // the rings start directly in the enabled state, and set_vring_enable will fail.
