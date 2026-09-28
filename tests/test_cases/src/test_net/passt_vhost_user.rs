@@ -9,21 +9,30 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-pub(crate) fn should_run() -> ShouldRun {
-    if !cfg!(target_os = "linux") {
-        return ShouldRun::No("vhost-user net requires Linux");
-    }
-    #[cfg(feature = "dynamic-linking")]
-    if krun::require(
+#[cfg(feature = "dynamic-linking")]
+fn require_symbols() -> Result<(), libloading::Error> {
+    krun::require(
         None,
         &[
             krun::Symbol::KrunNetDeviceNewVhostUserPath,
             krun::Symbol::KrunNetDeviceNewVhostUserFd,
         ],
     )
-    .is_err()
-    {
+}
+
+pub(crate) fn should_run() -> ShouldRun {
+    if !cfg!(target_os = "linux") {
+        return ShouldRun::No("vhost-user net requires Linux");
+    }
+    #[cfg(feature = "dynamic-linking")]
+    if require_symbols().is_err() {
         return ShouldRun::No("vhost-user net is unavailable in this libkrun build");
+    }
+    if matches!(
+        krun::NetDevice::new_vhost_user_path("net0", "", &[2; 6]),
+        Err(krun::VmmError::FeatureDisabled(..))
+    ) {
+        return ShouldRun::No("vhost-user net is disabled in this libkrun build");
     }
     match Command::new("passt").arg("--help").output() {
         Ok(output)
@@ -58,6 +67,9 @@ fn command() -> Command {
 }
 
 pub(crate) fn setup_fd(test_setup: &TestSetup) -> anyhow::Result<krun::NetDevice> {
+    #[cfg(feature = "dynamic-linking")]
+    require_symbols().context("load vhost-user net symbols")?;
+
     let (frontend, backend) = UnixStream::pair()?;
     let backend_fd = backend.as_raw_fd();
     let mut command = command();
@@ -79,6 +91,9 @@ pub(crate) fn setup_fd(test_setup: &TestSetup) -> anyhow::Result<krun::NetDevice
 }
 
 pub(crate) fn setup_path(test_setup: &TestSetup) -> anyhow::Result<krun::NetDevice> {
+    #[cfg(feature = "dynamic-linking")]
+    require_symbols().context("load vhost-user net symbols")?;
+
     let path = test_setup.tmp_dir.join("passt.socket");
     let mut child = command()
         .arg("--one-off")
