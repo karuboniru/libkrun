@@ -40,6 +40,11 @@ use test_tsi_tcp_guest_connect::TestTsiTcpGuestConnect;
 mod test_tsi_tcp_guest_listen;
 use test_tsi_tcp_guest_listen::TestTsiTcpGuestListen;
 
+#[cfg(target_os = "linux")]
+mod test_tsi_unix_host_close;
+#[cfg(target_os = "linux")]
+use test_tsi_unix_host_close::TestTsiUnixHostClose;
+
 pub(crate) mod test_net;
 use test_net::TestNet;
 
@@ -139,6 +144,8 @@ pub fn test_cases() -> Vec<TestCase> {
             "tsi-tcp-guest-listen",
             Box::new(TestTsiTcpGuestListen::new()),
         ),
+        #[cfg(target_os = "linux")]
+        TestCase::new("tsi-unix-host-close", Box::new(TestTsiUnixHostClose)),
         TestCase::new("net-passt", Box::new(TestNet::new_passt())),
         TestCase::new("net-tap", Box::new(TestNet::new_tap())),
         TestCase::new("net-gvproxy", Box::new(TestNet::new_gvproxy())),

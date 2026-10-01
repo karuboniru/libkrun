@@ -81,7 +81,7 @@ pub(crate) fn recv_to_pkt(proxy: &super::TsiStreamProxy, pkt: &mut VsockPacket) 
                 RecvPkt::Error
             } else {
                 debug!("recv_to_pkt error: {err}");
-                RecvPkt::Error
+                RecvPkt::Close
             }
         }
     } else {
@@ -401,7 +401,14 @@ pub(crate) fn do_shutdown(proxy: &mut super::TsiStreamProxy, pkt: &VsockPacket) 
 pub(crate) fn process_event(proxy: &mut super::TsiStreamProxy, evset: EventSet) -> ProxyUpdate {
     let mut update = ProxyUpdate::default();
 
-    if evset.contains(EventSet::HANG_UP) {
+    // A hung-up stream can still hold unread data. Only recv() can establish
+    // EOF, so stay in the draining states.
+    if evset.contains(EventSet::HANG_UP)
+        && !matches!(
+            proxy.status,
+            ProxyStatus::Connected | ProxyStatus::WaitingCreditUpdate
+        )
+    {
         if proxy.status == ProxyStatus::Connecting {
             proxy.push_connect_rsp(-111); // ECONNREFUSED
         } else {
@@ -418,7 +425,7 @@ pub(crate) fn process_event(proxy: &mut super::TsiStreamProxy, evset: EventSet) 
         return update;
     }
 
-    if evset.contains(EventSet::IN) {
+    if evset.intersects(EventSet::IN | EventSet::HANG_UP) {
         if proxy.status == ProxyStatus::Connected {
             let (signal_queue, wait_credit) = proxy.recv_pkt();
             update.signal_queue = signal_queue || wait_credit;
@@ -437,6 +444,7 @@ pub(crate) fn process_event(proxy: &mut super::TsiStreamProxy, evset: EventSet) 
                 proxy.push_reset();
                 update.signal_queue = true;
                 update.polling = Some((proxy.id, proxy.fd.as_raw_fd(), EventSet::empty()));
+                update.remove_proxy = ProxyRemoval::Deferred;
                 return update;
             } else if proxy.status == ProxyStatus::WaitingCreditUpdate {
                 update.polling = Some((proxy.id, proxy.fd.as_raw_fd(), EventSet::empty()));

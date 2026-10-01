@@ -206,7 +206,10 @@ pub(crate) fn recv_to_pkt(proxy: &super::TsiStreamProxy, pkt: &mut VsockPacket) 
             }
             Err(e) => {
                 debug!("recv_pkt: recv error: {e:?}");
-                RecvPkt::Error
+                match e {
+                    Errno::EAGAIN | Errno::EINTR => RecvPkt::Error,
+                    _ => RecvPkt::Close,
+                }
             }
         }
     } else {
@@ -471,6 +474,13 @@ pub(crate) fn update_peer_credit(
     proxy.peer_buf_alloc = pkt.buf_alloc();
     proxy.peer_fwd_cnt = Wrapping(pkt.fwd_cnt());
 
+    // Only a connection parked on credit may be resumed by a credit update, and
+    // only once it actually has credit again. Otherwise a late update would
+    // reopen a connection whose polling an event already stopped.
+    if proxy.status != ProxyStatus::WaitingCreditUpdate || proxy.peer_avail_credit() == 0 {
+        return ProxyUpdate::default();
+    }
+
     proxy.status = ProxyStatus::Connected;
 
     ProxyUpdate {
@@ -522,7 +532,15 @@ pub(crate) fn do_shutdown(proxy: &mut super::TsiStreamProxy, pkt: &VsockPacket) 
 pub(crate) fn process_event(proxy: &mut super::TsiStreamProxy, evset: EventSet) -> ProxyUpdate {
     let mut update = ProxyUpdate::default();
 
-    if evset.contains(EventSet::HANG_UP) {
+    // A hung-up stream can still hold unread data: Linux reports EPOLLIN
+    // together with EPOLLHUP even while the peer keeps unread bytes buffered.
+    // Only recv() can establish EOF, so stay in the draining states.
+    if evset.contains(EventSet::HANG_UP)
+        && !matches!(
+            proxy.status,
+            ProxyStatus::Connected | ProxyStatus::WaitingCreditUpdate
+        )
+    {
         debug!("process_event: HANG_UP");
         if proxy.status == ProxyStatus::Connecting {
             proxy.push_connect_rsp(-libc::ECONNREFUSED);
@@ -541,7 +559,7 @@ pub(crate) fn process_event(proxy: &mut super::TsiStreamProxy, evset: EventSet) 
         return update;
     }
 
-    if evset.contains(EventSet::IN) {
+    if evset.intersects(EventSet::IN | EventSet::HANG_UP) {
         debug!("process_event: IN");
         if proxy.status == ProxyStatus::Connected {
             let (signal_queue, wait_credit) = proxy.recv_pkt();
@@ -565,6 +583,7 @@ pub(crate) fn process_event(proxy: &mut super::TsiStreamProxy, evset: EventSet) 
                 proxy.push_reset();
                 update.signal_queue = true;
                 update.polling = Some((proxy.id, proxy.fd.as_raw_fd(), EventSet::empty()));
+                update.remove_proxy = ProxyRemoval::Deferred;
                 return update;
             } else if proxy.status == ProxyStatus::WaitingCreditUpdate {
                 debug!("process_event: WaitingCreditUpdate");

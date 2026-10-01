@@ -5,6 +5,11 @@ The testing framework here allows you to write code to configure libkrun (using 
 The tests can be ran using `make test` (from the main libkrun directory).
 You can also run `./run.sh` inside the `test` directory. When using the `./run.sh` script you probably want specify the `PKG_CONFIG_PATH` enviroment variable, otherwise you will be testing the system wide installation of libkrun.
 
+On Linux, `make test TEST=tsi-unix-host-close` checks that TSI drains buffered
+AF_UNIX stream data before handling a host close. The test stops the entire VM
+after a guest readiness handshake, writes and closes the host stream, then
+resumes the VM and verifies all 16 KiB of payload and EOF.
+
 ## Running on macOS
 
 ### Prerequisites
